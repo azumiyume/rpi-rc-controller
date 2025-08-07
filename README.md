@@ -47,3 +47,8 @@ main.py
 └─ constants.py（ピン番号、設定値など）
 
 
+SSH実行
+
+cd ~/rpi-rc-controller
+
+nohup sudo python3 main.py > output.log 2>&1 &
