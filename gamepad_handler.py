@@ -28,8 +28,8 @@ class GamepadHandler:
     A_BUTTON_IDX = 1
     Y_BUTTON_IDX = 2
     # Axis indices for left stick (common layout)
-    AXIS_LEFT_X = 0
-    AXIS_LEFT_Y = 1
+    AXIS_LEFT_X = 4
+    AXIS_LEFT_Y = 5
 
     def __init__(self):
         pygame.init()
