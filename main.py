@@ -1,27 +1,29 @@
-
 import time
 from motor_controller import MotorController
 from gamepad_handler import GamepadHandler
 
 # ===== Tunables =====
-LOOP_HZ = 50.0
-ACCEL_PER_SEC = 0.9     # throttle increase rate per second when A is held
-BRAKE_PER_SEC = 1.2     # throttle decrease rate per second when Y is held
-DRAG_PER_SEC = 1.0      # throttle natural decay toward 0 when no button held
-TURN_GAIN = 0.8         # how strongly turn mixes into wheel speeds
-MIN_DUTY = 25.0         # minimum duty to overcome stiction when moving (0..100)
-MAX_DUTY = 100.0        # clamp
-SAFETY_TIMEOUT = 1.5    # seconds since last pad read => stop
+LOOP_HZ = 75.0
+ACCEL_PER_SEC = 1.5     # ↑ 立ち上がり加速を強める
+BRAKE_PER_SEC = 1.2
+DRAG_PER_SEC = 1.0
+TURN_GAIN = 0.6         # ↓ 片輪が弱り過ぎないよう少し下げる
+TURN_DEADBAND = 0.05    # 微小なヨー入力を無視して左右差の発生を抑える
+
+MIN_DUTY = 65.0         # ↑ 始動用の底上げ（まずは 65、必要なら 70→75）
+MAX_DUTY = 100.0
+
+# 始動キック
+KICK_MS = 150           # 100〜200ms で調整
+KICK_DUTY = 100.0
+
+SAFETY_TIMEOUT = 1.5
 
 def mix(throttle: float, turn: float) -> tuple[float, float]:
-    """
-    Differential mixing:
-      left  = throttle + turn*TURN_GAIN
-      right = throttle - turn*TURN_GAIN
-    Clamp to -1..1
-    """
-    l = throttle + turn * TURN_GAIN
-    r = throttle - turn * TURN_GAIN
+    """Differential mixing with small deadband on turn."""
+    t = 0.0 if abs(turn) < TURN_DEADBAND else turn
+    l = throttle + t * TURN_GAIN
+    r = throttle - t * TURN_GAIN
     l = max(-1.0, min(1.0, l))
     r = max(-1.0, min(1.0, r))
     return l, r
@@ -40,7 +42,7 @@ def main():
     motor = MotorController(
         left_pins=(27, 22),   # Physical 13,15
         right_pins=(23, 24),  # Physical 16,18
-        pwm_freq=1000
+        pwm_freq=1000         # 1kHz 推奨
     )
     pad = GamepadHandler()
 
@@ -51,6 +53,12 @@ def main():
     throttle = 0.0  # -1..1
     last_time = time.monotonic()
     last_pad_time = last_time
+
+    # 始動キック管理（左右独立）
+    left_prev_dc = 0.0
+    right_prev_dc = 0.0
+    left_kick_until = 0.0
+    right_kick_until = 0.0
 
     try:
         while True:
@@ -81,20 +89,50 @@ def main():
             if now - last_pad_time > SAFETY_TIMEOUT:
                 motor.stop()
                 throttle = 0.0
+                left_prev_dc = right_prev_dc = 0.0  # 状態リセット
                 time.sleep(1.0 / LOOP_HZ)
                 continue
 
             # Differential mixing
             left_norm, right_norm = mix(throttle, st.turn)
 
-            # Convert to duty cycle
-            left_dc = to_duty(left_norm)
-            right_dc = to_duty(right_norm)
+            # Convert to duty cycle (±100)
+            left_dc_cmd = to_duty(left_norm)
+            right_dc_cmd = to_duty(right_norm)
 
-            print(f"turn={st.turn:+.2f}  fwd={st.a_pressed}  back={st.y_pressed}  thr={throttle:+.2f}  L={left_dc:+.0f}% R={right_dc:+.0f}%")
+            # --- 始動キック判定（停止→非0 で発火） ---
+            if left_prev_dc == 0.0 and left_dc_cmd != 0.0:
+                left_kick_until = now + KICK_MS / 1000.0
+            if right_prev_dc == 0.0 and right_dc_cmd != 0.0:
+                right_kick_until = now + KICK_MS / 1000.0
+
+            # キック適用（時間内は100%固定、符号はコマンドに合わせる）
+            if now < left_kick_until:
+                left_dc = KICK_DUTY if left_dc_cmd >= 0 else -KICK_DUTY
+            else:
+                left_dc = left_dc_cmd
+
+            if now < right_kick_until:
+                right_dc = KICK_DUTY if right_dc_cmd >= 0 else -KICK_DUTY
+            else:
+                right_dc = right_dc_cmd
+
+            # 出力
+            print(
+                f"turn={st.turn:+.2f}  fwd={st.a_pressed}  back={st.y_pressed} "
+                f"thr={throttle:+.2f}  L={left_dc:+.0f}% R={right_dc:+.0f}%"
+            )
             motor.drive(left_dc, right_dc)
 
-            time.sleep(max(0.0, 1.0 / LOOP_HZ - (time.monotonic() - now)))
+            # 次回用に保持
+            left_prev_dc = 0.0 if left_dc == 0.0 else left_dc
+            right_prev_dc = 0.0 if right_dc == 0.0 else right_dc
+
+            # ループ周期調整
+            sleep_rem = 1.0 / LOOP_HZ - (time.monotonic() - now)
+            if sleep_rem > 0:
+                time.sleep(sleep_rem)
+
     except KeyboardInterrupt:
         pass
     finally:
