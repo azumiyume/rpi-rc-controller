@@ -45,7 +45,7 @@ def main():
     pad = GamepadHandler()
 
     if pad.pad is None:
-        print("⚠️  No gamepad detected. Pair/connect your controller, then try again.")
+        print("No gamepad detected. Pair/connect your controller, then try again.")
         return
 
     throttle = 0.0  # -1..1
@@ -64,9 +64,9 @@ def main():
 
             # Update throttle based on A/Y
             if st.a_pressed:
-                throttle += ACCEL_PER_SEC * dt
+                 throttle += ACCEL_PER_SEC * dt
             elif st.y_pressed:
-                throttle -= BRAKE_PER_SEC * dt
+                 throttle -= BRAKE_PER_SEC * dt
             else:
                 # natural decay toward 0 (coast)
                 if throttle > 0:
@@ -91,6 +91,7 @@ def main():
             left_dc = to_duty(left_norm)
             right_dc = to_duty(right_norm)
 
+            print(f"turn={st.turn:+.2f}  fwd={st.a_pressed}  back={st.y_pressed}  thr={throttle:+.2f}  L={left_dc:+.0f}% R={right_dc:+.0f}%")
             motor.drive(left_dc, right_dc)
 
             time.sleep(max(0.0, 1.0 / LOOP_HZ - (time.monotonic() - now)))

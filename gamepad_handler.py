@@ -1,35 +1,35 @@
-
 import os
 import pygame
 from dataclasses import dataclass
 
-# Allow pygame to init without a display (headless SSH)
+# ヘッドレスSSHでもpygame初期化できるように
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
-DEADZONE = 0.15  # ignore tiny stick noise
+# ===== チューニング =====
+DEADZONE = 0.05         # デッドゾーン（D-Padは±1.0なので小さめでOK）
+INVERT_TURN = False     # 左右が逆なら True にする
+USE_HAT_FALLBACK = True # 軸が0の時にhat(0)のXを使う保険
 
 @dataclass
 class PadState:
-    turn: float          # -1..1 (left stick X)
+    turn: float          # -1..1（左: -1, 右: +1）
     a_pressed: bool
     y_pressed: bool
     connected: bool
 
 class GamepadHandler:
     """
-    Pygame-based gamepad reader.
-    Defaults target a Switch-like controller:
-      - A button index tends to be 1
-      - Y button index tends to be 2
-    If your controller mapping differs, tweak A_BUTTON_IDX / Y_BUTTON_IDX below
-    or run this file directly to print button indices.
+    Joy-Con (R) 横持ちの実測（あなたの jstest 結果）に合わせたマッピング：
+      - Buttons: A=0, X=1, B=2, Y=3
+      - D-Pad:   左右=Axis 4（-32767/32767）, 上下=Axis 5
     """
-    # Default mapping suitable for many Switch-style pads on Linux
-    A_BUTTON_IDX = 1
-    Y_BUTTON_IDX = 2
-    # Axis indices for left stick (common layout)
-    AXIS_LEFT_X = 4
-    AXIS_LEFT_Y = 5
+    # --- あなたの実測に合わせる ---
+    FORWARD_BUTTON_IDX = 1  
+    BACKWARD_BUTTON_IDX = 2   
+
+    # 「向き」はD-Pad左右を turn として使う
+    AXIS_TURN = 4      # D-Pad 左右（±1.0に正規化される）
+    AXIS_TURN_ALT = None  # 予備軸があれば指定（例: 0 や 2 など）。通常は不要。
 
     def __init__(self):
         pygame.init()
@@ -39,47 +39,67 @@ class GamepadHandler:
             self.pad = pygame.joystick.Joystick(0)
             self.pad.init()
 
+    def _read_axis(self, idx: int) -> float:
+        try:
+            return float(self.pad.get_axis(idx))
+        except Exception:
+            return 0.0
+
+    def _read_button(self, idx: int) -> bool:
+        try:
+            return bool(self.pad.get_button(idx))
+        except Exception:
+            return False
+
     def read(self) -> PadState:
         if self.pad is None:
             return PadState(turn=0.0, a_pressed=False, y_pressed=False, connected=False)
 
         pygame.event.pump()
 
-        # Left stick X for steering
-        turn = 0.0
-        try:
-            turn = self.pad.get_axis(self.AXIS_LEFT_X)
-        except Exception:
-            turn = 0.0
+        # 1) まず指定の軸から turn を読む（D-Pad左右=Axis 4）
+        turn = self._read_axis(self.AXIS_TURN)
 
-        # Deadzone
+        # 2) 補助軸の値が必要なら加味（通常は未使用）
+        if self.AXIS_TURN_ALT is not None and abs(turn) < DEADZONE:
+            alt = self._read_axis(self.AXIS_TURN_ALT)
+            if abs(alt) > abs(turn):
+                turn = alt
+
+        # 3) 軸が0なら HAT(X) の値（-1,0,1）を保険で使う
+        if USE_HAT_FALLBACK and abs(turn) < DEADZONE:
+            try:
+                if self.pad.get_numhats() > 0:
+                    hat_x, _ = self.pad.get_hat(0)
+                    turn = float(hat_x)
+            except Exception:
+                pass
+
+        # 4) デッドゾーン適用
         if abs(turn) < DEADZONE:
             turn = 0.0
 
-        def btn(idx: int) -> bool:
-            try:
-                return bool(self.pad.get_button(idx))
-            except Exception:
-                return False
+        # 5) 方向反転
+        if INVERT_TURN:
+            turn = -turn
 
-        a_pressed = btn(self.A_BUTTON_IDX)
-        y_pressed = btn(self.Y_BUTTON_IDX)
+        a_pressed = self._read_button(self.FORWARD_BUTTON_IDX)
+        y_pressed = self._read_button(self.BACKWARD_BUTTON_IDX)
 
-        return PadState(turn=float(turn), a_pressed=a_pressed, y_pressed=y_pressed, connected=True)
+        return PadState(turn=turn, a_pressed=a_pressed, y_pressed=y_pressed, connected=True)
 
 if __name__ == "__main__":
-    # Simple tester to find your A/Y indices.
     import time
     gh = GamepadHandler()
     if gh.pad is None:
         print("No gamepad detected. Pair/connect your controller and try again.")
         raise SystemExit(1)
-    print("Press buttons; Ctrl+C to exit. Observing A idx=%d, Y idx=%d"
-          % (GamepadHandler.A_BUTTON_IDX, GamepadHandler.Y_BUTTON_IDX))
+
+    print(f"Using Joy-Con (R) mapping: X={GamepadHandler.FORWARD_BUTTON_IDX}, B={GamepadHandler.BACKWARD_BUTTON_IDX}, TURN_AXIS={GamepadHandler.AXIS_TURN}")
     try:
         while True:
             st = gh.read()
-            print(f"turn={st.turn:+.2f}  A={st.a_pressed}  Y={st.y_pressed}")
+            print(f"turn={st.turn:+.2f}  X={st.a_pressed}  B={st.y_pressed}")
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
